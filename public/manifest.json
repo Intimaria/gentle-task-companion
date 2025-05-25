@@ -1,0 +1,22 @@
+{
+  "name": "Gentle Task Companion",
+  "short_name": "GentleTasks",
+  "description": "A gentle, accessible task companion with soothing audio, gratitude, and crisis support.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f6fa",
+  "theme_color": "#a3c9c7",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
