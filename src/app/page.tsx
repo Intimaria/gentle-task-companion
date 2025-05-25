@@ -12,6 +12,14 @@ import { supabase } from "../lib/supabaseClient";
 import type { User } from "@supabase/supabase-js";
 import { useTranslation } from "../hooks/useTranslation";
 
+// Utility: get local date as yyyy-mm-dd
+function getLocalDateString() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
 
 export default function Home() {
 const { t } = useTranslation();
@@ -30,7 +38,7 @@ const [tasks, setTasks] = useState<Task[]>([]);
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 const [gratitudes, setGratitudes] = useState<Gratitude[]>([]);
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+const [date, setDate] = useState(() => getLocalDateString());
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 const [mood, setMood] = useState<string | null>(null);
 
@@ -273,7 +281,7 @@ useEffect(() => {
     </div>
   )}
 </section>
-    <hr className="my-6 border-fuchsia-100" />
+    <hr className="my-8 border-gray-300" />
     <section className="w-full max-w-md bg-white/70 rounded-xl shadow p-6 mb-8">
       <h2 className="text-lg font-semibold mb-2 flex items-center gap-2 text-fuchsia-700">
         <span>📝</span> {t('todayYouWrote')}
@@ -313,7 +321,15 @@ useEffect(() => {
         </div>
       )}
     </section>
-
+    {/* About link and separator as a gentle footnote, outside the white box */}
+    <div className="w-full flex justify-center">
+      <div className="mt-4 mb-2 text-center bg-transparent">
+        <span className="text-xs text-fuchsia-900/80 font-medium px-2 py-1 rounded">
+          {t('aboutPreLink')} <Link href="/about" className="underline hover:text-fuchsia-700 transition focus:outline-none focus:ring-2 focus:ring-fuchsia-300 rounded text-xs">{t('aboutLink')}</Link>
+        </span>
+      </div>
+    </div>
+    {/* Footer always visible at the bottom */}
 <footer className="fixed bottom-0 left-0 w-full flex justify-around items-center py-3 bg-white/80 shadow-inner z-50">
   <button
     className="flex flex-col items-center text-fuchsia-600 focus:outline-none"

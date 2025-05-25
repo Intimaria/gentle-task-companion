@@ -7,6 +7,7 @@ interface Translations {
 export function useTranslation() {
   const [locale, setLocale] = useState('en');
   const [translations, setTranslations] = useState<{ [locale: string]: Translations }>({});
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     // Detect browser language
@@ -33,6 +34,7 @@ export function useTranslation() {
           en: enData,
           es: esData
         });
+        setReady(true);
       } catch (error) {
         console.error('Failed to load translations:', error);
         // Fallback translations
@@ -84,6 +86,7 @@ export function useTranslation() {
             safeMessageAudio: "safe-message-es.mp3"
           }
         });
+        setReady(true);
       }
     };
 
@@ -100,5 +103,5 @@ export function useTranslation() {
     return str;
   };
 
-  return { t, locale, setLocale };
+  return { t, locale, setLocale, ready };
 }

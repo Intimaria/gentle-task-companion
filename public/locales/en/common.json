@@ -79,5 +79,17 @@
   "soundNight": "Night",
   "soundCafe": "Cafe",
   "soundWhiteNoise": "White Noise",
-  "play": "Play"
+  "play": "Play",
+  "aboutTitle": "About This App",
+  "aboutSupportTitle": "Support & Contributions",
+  "aboutContribute": "If you have suggestions, ideas, or want to contribute, you are warmly invited to visit the project on GitHub:",
+  "aboutGithub": "https://github.com/Intimaria/gentle-task-companion",
+  "aboutDonate": "If you wish to support my work with a donation, you are most welcome to do so via:",
+  "aboutMercadoPago": "MercadoPago",
+  "aboutPaypal": "PayPal",
+  "aboutThanks": "Thank you for being here. Take care of yourself, and remember you are not alone.",
+  "aboutLink": "about this app",
+  "aboutPreLink": "Thanks for being here, find out more",
+  "aboutHonest": "This app was created to be a soft, quiet alternative to the overwhelming productivity tools most of us have tried and quit. I built it because I couldn’t find anything that didn’t make me feel worse.\n\nIt’s made for anyone who needs support remembering, doing, or finishing things — especially folks with ADHD, autism, anxiety, burnout, or just a noisy life.",
+  "supportMessageText": "I need support right now, I'm having a hard time."
 }

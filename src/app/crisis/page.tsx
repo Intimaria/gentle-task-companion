@@ -13,7 +13,7 @@ import { useTranslation } from "../../hooks/useTranslation";
 
 
 export default function CrisisPage() {
-  const { t } = useTranslation();
+  const { t, ready } = useTranslation();
   const [showModal, setShowModal] = useState(false);
   const [contact, setContact] = useState<{ name: string; phone: string } | null>(null);
   const [name, setName] = useState("");
@@ -118,10 +118,10 @@ function resumeSafeMessage() {
 
       <h1 className="text-3xl font-bold text-red-600 mb-2 text-center drop-shadow">{t('crisisSupport')}</h1>
       <p className="text-center text-fuchsia-900 text-lg max-w-xl mb-4">{t('crisisDescription')}</p>
-            {contact && (
+      {contact && ready && (
         <div className="flex flex-col gap-2 mt-4">
           <a
-            href={`https://wa.me/${contact.phone}?text=I%20need%20support%20right%20now`}
+            href={`https://wa.me/${contact.phone.replace(/\D/g, "")}?text=${encodeURIComponent(t('supportMessageText'))}`}
             target="_blank"
             rel="noopener noreferrer"
             className="px-6 py-3 rounded bg-green-200 text-green-900 font-semibold shadow inline-block text-center"
@@ -129,7 +129,7 @@ function resumeSafeMessage() {
             {t('messageWhatsApp').replace('{name}', contact.name)}
           </a>
           <a
-            href={`sms:${contact.phone}?body=I%20need%20support%20right%20now`}
+            href={`sms:${contact.phone}?body=${encodeURIComponent(t('supportMessageText'))}`}
             className="px-6 py-3 rounded bg-blue-200 text-blue-900 font-semibold shadow inline-block text-center"
           >
             {t('messageSMS').replace('{name}', contact.name)}
