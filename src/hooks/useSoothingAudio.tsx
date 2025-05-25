@@ -3,7 +3,7 @@ import { useRef, useState } from "react";
 export type SoothingSound = {
   name: string;
   url: string;
-  icon?: string; // optional, for visual representation
+  icon?: string; 
 };
 
 export function useSoothingAudio(
