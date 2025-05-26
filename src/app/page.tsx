@@ -233,6 +233,7 @@ useEffect(() => {
       </section>
 <section className="w-full max-w-md bg-white/70 rounded-xl shadow p-6">
   <h2 className="text-xl font-bold mb-2">{t('gratitude')}</h2>
+    <p className="mb-2 text-xs text-gray-500 text-left">{t('gratitudeScience')}</p>
   <ul className="flex flex-col gap-2 mb-2">
     {(state.gratitudes || []).map((g, idx) => (
       <li key={idx} className="flex items-center gap-2">
@@ -253,7 +254,9 @@ useEffect(() => {
     ))}
   </ul>
   {state.gratitudes.length < 5 && (
+
     <div className="flex gap-2">
+
       <input
         type="text"
         className="w-full rounded px-3 py-2 border border-gray-300 focus:outline-none focus:ring focus:ring-yellow-200 transition-colors duration-300"

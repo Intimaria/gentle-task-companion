@@ -27,7 +27,8 @@
   "mood": "Ánimo",
   "gratitude": "Gratitud",
   "addGratitude": "Agregar",
-  "addGratitudePlaceholder": "Agregar gratitud",
+  "addGratitudePlaceholder": "Notar algo bueno",
+  "gratitudePlaceholder": "¿Por qué estás agradecide hoy?",
   "completedTasks": "Tareas completadas",
   "todayYouWrote": "Hoy escribiste...",
   "tasks": "Tareas",
@@ -95,5 +96,6 @@
   "aboutLink": "acerca de esta app",
   "aboutPreLink": "Gracias por estar aquí, enterate más",
   "aboutHonest": "Esta app fue creada como una alternativa suave y silenciosa a las herramientas de productividad abrumadoras que la mayoría hemos probado y dejado. La hice porque no encontraba nada que no me hiciera sentir peor.\n\nEstá pensada para quienes necesitan apoyo para recordar, hacer o terminar cosas — especialmente personas con TDAH, autismo, ansiedad, burnout, o simplemente una vida ruidosa.",
-  "supportMessageText": "Necesito apoyo, estoy en crisis"
+  "supportMessageText": "Necesito apoyo, estoy en crisis",
+  "gratitudeScience": "Escribir agradecimientos ayuda al cerebro a notar lo bueno. Agregá algo que hizo el día un poco más fácil"
 }
