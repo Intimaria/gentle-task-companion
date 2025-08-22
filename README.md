@@ -133,12 +133,12 @@ Here’s a gentle checklist of what’s done and what’s planned. If you have i
 - [x] Accesibility and UX focus
 
 ### Planned / Ideas
-- [ ] Optional login for persistent accounts
+- [x] Optional login for persistent accounts
 - [ ] Client-side encryption for sensitive data
 - [ ] More languages (translations welcome!)
 - [ ] Improved accessibility and theming
 - [ ] Add input for communication cards
-- [ ] Improved functionality for save & retrieval of data
+- [x] Improved functionality for save & retrieval of data
 - [ ] Explore types of messages or notifications for positive reinforcement
 - [ ] Periodic feedback
 - [ ] Landing page
