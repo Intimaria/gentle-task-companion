@@ -9,8 +9,8 @@ import { useState, useEffect } from "react";
 import { fetchFullEntry, saveFullEntry } from "../lib/dailyEntryApi";
 import type { DailyEntry, Task, Gratitude } from "../types/DailyEntry";
 import { supabase } from "../lib/supabaseClient";
-import type { User } from "@supabase/supabase-js";
 import { useTranslation } from "../hooks/useTranslation";
+import { useAuth } from "../hooks/useAuth";
 
 // Utility: get local date as yyyy-mm-dd
 function getLocalDateString() {
@@ -23,13 +23,30 @@ function getLocalDateString() {
 
 export default function Home() {
 const { t } = useTranslation();
+const { user, loading, signUp, signIn, signOut } = useAuth();
 const [showCommCards, setShowCommCards] = useState(false);
 const [showCompleted, setShowCompleted] = useState(false);
 const [showGratitudes, setShowGratitudes] = useState(false);
 const [showHistory, setShowHistory] = useState(false);
 const [state, setState] = useDailyState();
-const [user, setUser] = useState<User | null>(null);
 const [history, setHistory] = useState<HistoryEntry[]>([]);
+
+// Auth form state
+const [email, setEmail] = useState('');
+const [password, setPassword] = useState('');
+const [isSignUp, setIsSignUp] = useState(false);
+const [authError, setAuthError] = useState<string | null>(null);
+const [authSuccess, setAuthSuccess] = useState<string | null>(null);
+const [showPassword, setShowPassword] = useState(false);
+
+// Password validation
+const [passwordRequirements, setPasswordRequirements] = useState({
+  minLength: false,
+  hasLowercase: false,
+  hasUppercase: false,
+  hasNumber: false,
+  hasSpecialChar: false,
+});
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 const [entry, setEntry] = useState<DailyEntry | null>(null);
@@ -90,21 +107,66 @@ if (!state.tasks || state.tasks.length === 0) missingFields.push(t("tasks"));
 if (!state.mood) missingFields.push(t("mood"));
 if (!state.gratitudes || state.gratitudes.length === 0) missingFields.push(t("gratitude"));
 
-useEffect(() => {
-  supabase.auth.getSession().then((result) => {
-    const session = result.data.session;
-    setUser(session?.user ?? null);
-    if (!session?.user) {
-      supabase.auth.signInAnonymously().then(({ data }) => {
-        if (data?.user) setUser(data.user);
-      });
+// Handle email/password authentication
+const handleAuth = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setAuthError(null);
+  setAuthSuccess(null);
+  
+  const authFunction = isSignUp ? signUp : signIn;
+  const { error } = await authFunction(email, password);
+  
+  if (error) {
+    setAuthError(error.message);
+  } else {
+    if (isSignUp) {
+      setAuthSuccess(t('registrationSuccess'));
+      // Clear form and success message after showing success for a few seconds
+      setTimeout(() => {
+        resetForm();
+        setIsSignUp(false); // Switch back to sign-in mode
+      }, 4000); // 4 seconds to read the message
+    } else {
+      // Clear form immediately on successful sign-in
+      resetForm();
     }
+  }
+};
+
+// Validate password requirements
+const validatePassword = (pwd: string) => {
+  setPasswordRequirements({
+    minLength: pwd.length >= 6,
+    hasLowercase: /[a-z]/.test(pwd),
+    hasUppercase: /[A-Z]/.test(pwd),
+    hasNumber: /\d/.test(pwd),
+    hasSpecialChar: /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(pwd),
   });
-  const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-    setUser(session?.user ?? null);
+};
+
+// Handle password change
+const handlePasswordChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const newPassword = e.target.value;
+  setPassword(newPassword);
+  if (isSignUp) {
+    validatePassword(newPassword);
+  }
+};
+
+// Clear success message and reset form when switching modes or component unmounts
+const resetForm = () => {
+  setEmail('');
+  setPassword('');
+  setAuthError(null);
+  setAuthSuccess(null);
+  setPasswordRequirements({
+    minLength: false,
+    hasLowercase: false,
+    hasUppercase: false,
+    hasNumber: false,
+    hasSpecialChar: false,
   });
-  return () => listener?.subscription?.unsubscribe();
-}, []);
+};
 
   useEffect(() => {
     if (!user?.id) return;
@@ -134,6 +196,16 @@ useEffect(() => {
       );
   }
 
+  // Show loading state
+  if (loading) {
+    return (
+      <main className="flex flex-col min-h-screen items-center justify-center gap-8 p-4 pb-24">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+        <p className="text-gray-600">Loading...</p>
+      </main>
+    );
+  }
+
   return (
     <main className="flex flex-col min-h-screen items-center justify-center gap-8 p-4 pb-24">
       <Link href="/crisis">
@@ -144,12 +216,11 @@ useEffect(() => {
         Crisis
       </button>
     </Link>
+
       <section className="w-full max-w-md bg-white/70 rounded-xl shadow p-6">
-      <h2 className="text-xl font-bold mb-2">{t('chooseTasks')}</h2>
-<section className="w-full max-w-md bg-white/70 rounded-xl shadow p-6">
-  <h2 className="text-xl font-bold mb-2">{t('todaysTasks')}</h2>
-  <ul className="flex flex-col gap-2">
-    {state.tasks.map((task, idx) => (
+        <h2 className="text-xl font-bold mb-2">{t('chooseTasks')}</h2>
+        <ul className="flex flex-col gap-2">
+          {state.tasks.map((task, idx) => (
       <li key={idx} className="flex items-center gap-2">
         <TaskInput
           value={task.text}
@@ -223,7 +294,6 @@ useEffect(() => {
    {t('taskInstructions')}
     </p>
 </section>
-      </section>
       <section className="w-full max-w-md bg-white/70 rounded-xl shadow p-6">
         <h2 className="text-xl font-bold mb-2">{t('mood')}</h2>
         <MoodInput
@@ -284,6 +354,135 @@ useEffect(() => {
     </div>
   )}
 </section>
+
+    {/* Auth Section */}
+    <section className="w-full max-w-md bg-white/70 rounded-xl shadow p-6">
+      {user ? (
+        <div className="text-center">
+          <p className="text-sm text-gray-600 mb-2">
+            {t('welcomeBack')} {user.email}
+          </p>
+          <button
+            onClick={signOut}
+            className="text-xs text-gray-500 hover:text-gray-700 underline"
+          >
+            {t('signOut')}
+          </button>
+        </div>
+      ) : (
+        <div className="text-center">
+          <p className="text-sm text-gray-600 mb-3">
+            {t('saveProgressMessage')}
+          </p>
+          
+          <form onSubmit={handleAuth} className="space-y-3">
+            <input
+              type="email"
+              placeholder={t('email')}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              required
+            />
+            
+            <div className="relative">
+              <input
+                type={showPassword ? "text" : "password"}
+                placeholder={t('password')}
+                value={password}
+                onChange={handlePasswordChange}
+                className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                required
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              >
+                {showPassword ? '🙈' : '👁️'}
+              </button>
+            </div>
+            
+            {isSignUp && password && (
+              <div className="text-xs space-y-1 p-3 bg-gray-50 rounded-lg">
+                <p className="font-medium text-gray-700 mb-2">{t('passwordRequirements')}:</p>
+                <div className={`flex items-center ${passwordRequirements.minLength ? 'text-green-600' : 'text-red-500'}`}>
+                  <span className="mr-2">{passwordRequirements.minLength ? '✓' : '✗'}</span>
+                  {t('passwordMinLength')}
+                </div>
+                <div className={`flex items-center ${passwordRequirements.hasLowercase ? 'text-green-600' : 'text-red-500'}`}>
+                  <span className="mr-2">{passwordRequirements.hasLowercase ? '✓' : '✗'}</span>
+                  {t('passwordLowercase')}
+                </div>
+                <div className={`flex items-center ${passwordRequirements.hasUppercase ? 'text-green-600' : 'text-red-500'}`}>
+                  <span className="mr-2">{passwordRequirements.hasUppercase ? '✓' : '✗'}</span>
+                  {t('passwordUppercase')}
+                </div>
+                <div className={`flex items-center ${passwordRequirements.hasNumber ? 'text-green-600' : 'text-red-500'}`}>
+                  <span className="mr-2">{passwordRequirements.hasNumber ? '✓' : '✗'}</span>
+                  {t('passwordNumber')}
+                </div>
+                <div className={`flex items-center ${passwordRequirements.hasSpecialChar ? 'text-green-600' : 'text-red-500'}`}>
+                  <span className="mr-2">{passwordRequirements.hasSpecialChar ? '✓' : '✗'}</span>
+                  {t('passwordSpecialChar')}
+                </div>
+              </div>
+            )}
+            
+            {authError && (
+              <div className="text-xs text-red-500 p-3 bg-red-50 rounded-lg border border-red-200">
+                <p>{authError}</p>
+              </div>
+            )}
+            
+            {authSuccess && (
+              <div className="text-xs text-green-600 p-3 bg-green-50 rounded-lg border border-green-200 relative">
+                <button
+                  type="button"
+                  onClick={() => {
+                    resetForm();
+                    setIsSignUp(false);
+                  }}
+                  className="absolute top-2 right-2 text-green-400 hover:text-green-600 text-lg leading-none"
+                >
+                  ×
+                </button>
+                <p className="font-medium pr-6">{authSuccess}</p>
+                <p className="mt-1 text-gray-600 pr-6">{t('checkEmailConfirmation')}</p>
+              </div>
+            )}
+            
+            <button
+              type="submit"
+              disabled={isSignUp && (!Object.values(passwordRequirements).every(Boolean) || !email || !password)}
+              className={`w-full px-4 py-2 rounded-lg transition-colors ${
+                isSignUp && (!Object.values(passwordRequirements).every(Boolean) || !email || !password)
+                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed' 
+                  : 'bg-blue-500 text-white hover:bg-blue-600'
+              }`}
+            >
+              {isSignUp ? t('signUp') : t('signIn')}
+            </button>
+            
+            <button
+              type="button"
+              onClick={() => {
+                setIsSignUp(!isSignUp);
+                resetForm();
+              }}
+              className="text-xs text-blue-500 hover:text-blue-700 underline"
+            >
+              {isSignUp ? t('alreadyHaveAccount') : t('needAccount')}
+            </button>
+          </form>
+          
+          <p className="text-xs text-gray-500 mt-2">
+            {t('optionalMessage')}
+          </p>
+        </div>
+      )}
+    </section>
+
     <hr className="my-8 border-gray-300" />
     <section className="w-full max-w-md bg-white/70 rounded-xl shadow p-6 mb-8">
       <h2 className="text-lg font-semibold mb-2 flex items-center gap-2 text-fuchsia-700">
