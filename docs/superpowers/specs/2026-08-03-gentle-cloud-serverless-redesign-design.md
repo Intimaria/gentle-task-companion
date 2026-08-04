@@ -201,9 +201,15 @@ relacional se reemplaza por una sola `Query` a la partición.
 
 **companion Lambda**
 
-- `GET /companion?species=` — trae una imagen **random** del animal (API externa) → URL
-- `POST /companion/save` — guarda la imagen actual como favorita en S3 (registra `ANIMAL#`)
-- `GET /companion/saved` — lista los favoritos del usuario → URLs prefirmadas
+- `GET /companion?species=` — **público (sin login)**: trae una imagen **random** del animal
+  (API externa) → URL. El consuelo está disponible para cualquiera, incluso deslogueado.
+- `POST /companion/save` — **con login**: guarda la imagen actual como favorita en S3 (`ANIMAL#`)
+- `GET /companion/saved` — **con login**: lista los favoritos del usuario → URLs prefirmadas
+
+> Nota: el middleware de auth hoy es global (`app.use("*", createAuth)`). Para dejar
+> `GET /companion` público hay que hacerlo **selectivo por ruta** (auth solo en las rutas
+> personales). Mismo criterio que en el front: herramientas sin vínculo al usuario (crisis,
+> tarjetas de comunicación, animalito random) están disponibles sin login.
 
 ### IAM mínimo privilegio
 
