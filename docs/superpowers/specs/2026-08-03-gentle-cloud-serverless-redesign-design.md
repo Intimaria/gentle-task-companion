@@ -152,7 +152,7 @@ relacional se reemplaza por una sola `Query` a la partición.
 | Check-in de ánimo | `MOOD#<ISO-ts>` | mood, note? | trayectoria de ánimo + intra-día |
 | Tarea | `TASK#<ulid>` | text, status, createdAt, completedAt | registro de tareas completadas |
 | Gratitud | `GRAT#<ISO-ts>` | text | diario de gratitud |
-| Animalito | `ANIMAL#<ulid>` | species, mood, s3Key, source | galería de animalitos |
+| Animalito (favorito) | `ANIMAL#<ulid>` | species, apiSource, s3Key, savedAt | galería de favoritos guardados |
 | Stats (opcional) | `STATS` | streakDays, tasksDone, lastActive | rachas / estadísticas |
 
 ### Decisiones
@@ -201,42 +201,50 @@ relacional se reemplaza por una sola `Query` a la partición.
 
 **companion Lambda**
 
-- `GET /companion?species=&mood=` — elige imagen → URL prefirmada
-- `POST /companion/upload-url` — presigned PUT
-- `POST /companion` — confirma subida (registra `ANIMAL#`)
+- `GET /companion?species=` — trae una imagen **random** del animal (API externa) → URL
+- `POST /companion/save` — guarda la imagen actual como favorita en S3 (registra `ANIMAL#`)
+- `GET /companion/saved` — lista los favoritos del usuario → URLs prefirmadas
 
 ### IAM mínimo privilegio
 
 - `core-api` → solo DynamoDB (Query/PutItem/UpdateItem sobre `gentle`) + KMS decrypt.
-- `companion` → solo S3 (Get/Put sobre `gentle-animals`) + `ANIMAL#` en DynamoDB + KMS.
+- `companion` → S3 (Get/Put sobre `gentle-animals`, favoritos) + `ANIMAL#` en DynamoDB + KMS +
+  salida HTTPS a las APIs de animales + lectura de la API key (Secrets Manager / SOPS).
 - Sin permisos cruzados entre Lambdas.
 
 ---
 
-## 6. Feature de animalitos (S3 + Lambda + KMS)
+## 6. Feature de animalitos (APIs externas + S3 para favoritos)
 
-Companion emocional multi-especie: la persona elige su animal preferido (gato, capivara,
-perro, pájaro) y, según su estado, ve un animalito que lo refleja.
+Companion multi-especie: la persona elige su animal preferido (gato, capivara, perro, pájaro)
+en el perfil y, cuando busca calma, recibe una imagen **random** de esa especie. El valor es el
+consuelo del animalito en sí — **no** se pretende que la imagen "refleje" el ánimo (los animales
+no expresan emoción de forma fiable, y forzar upload/curado sería fricción de UX). El ánimo se
+registra aparte (`moods`). *(El matching por ánimo con set curado en S3 = iteración B, futura.)*
 
-Bucket `gentle-animals` privado, **SSE-KMS**:
+Fuentes por especie (con fallback en cadena si una falla):
+gato → **TheCatAPI** · perro → **TheDogAPI** · capivara → **capy.lol** · pájaro → **Nuthatch**
+(requiere API key) o **Ornithophile** (imágenes de Wikimedia, parsear).
 
-- Curadas: `curated/<especie>/<ánimo>/<n>.gif` (sembradas al levantar el stack).
-- Subidas: `users/<sub>/<especie>/<ánimo>/<ulid>.<ext>` (aisladas por usuaria en el prefijo).
+Bucket `gentle-animals` privado, **SSE-KMS** → **solo para favoritos guardados y caché**
+(no hay set curado ni uploads del usuario).
 
 ### Flujos
 
-- **Select:** `GET /companion?species=capybara&mood=triste` → la Lambda combina imágenes
-  curadas + subidas de la usuaria, elige una (aleatoria/rotativa) y devuelve una **URL
-  prefirmada** (expira en minutos). El bucket nunca se expone públicamente.
-- **Upload:** `POST /companion/upload-url` con `{species, mood, contentType}` → la Lambda
-  genera un **presigned PUT** al key `users/<sub>/...` → el front sube **directo a S3** (no
-  pasa por la Lambda) → `POST /companion` confirma y guarda el ítem `ANIMAL#` en DynamoDB.
-- **Opcional (stretch):** si no hay imagen para esa especie/ánimo, fallback a una API externa
-  (TheCatAPI / TheDogAPI).
+- **Fetch random:** `GET /companion?species=capybara` → la Lambda pega a la API de esa especie
+  → devuelve la URL de una imagen random (o la proxya). Sin estado.
+- **Guardar favorito:** `POST /companion/save` con `{species, imageUrl}` → la Lambda baja la
+  imagen y la guarda en `users/<sub>/<ulid>` (S3, SSE-KMS) y registra `ANIMAL#` en DynamoDB.
+  Sirve de galería personal y de caché (reduce llamadas a APIs con rate-limit como Nuthatch).
+- **Ver galería:** `GET /companion/saved` → lista `ANIMAL#` del usuario → URLs prefirmadas.
 
-### Cifrado
+### Notas
 
-Imágenes SSE-KMS at-rest; URLs prefirmadas sobre HTTPS in-transit.
+- **Secretos:** la API key de Nuthatch va en Secrets Manager (AWS) / SOPS (self-host), nunca
+  hardcodeada.
+- **Dependencia de internet:** el fetch primario usa APIs externas → el demo necesita internet;
+  los favoritos en S3 mitigan (caché / offline parcial).
+- **Cifrado:** favoritos SSE-KMS at-rest; URLs prefirmadas sobre HTTPS in-transit.
 
 ---
 
@@ -251,8 +259,8 @@ Imágenes SSE-KMS at-rest; URLs prefirmadas sobre HTTPS in-transit.
 - **En self-host:** cifrado at-rest con SSE de MinIO/ScyllaDB + LUKS en la VM; TLS vía Cloudflare
   Tunnel; secretos con SOPS/age (como ya usa el homelab).
 - **Mínimo privilegio:** roles IAM por Lambda acotados a sus recursos.
-- **Secretos:** sin claves en el código; parámetros vía variables de entorno / (en AWS)
-  Secrets Manager si hicieran falta.
+- **Secretos:** sin claves en el código. La API key de Nuthatch (imágenes de pájaros) y demás
+  secretos van en **Secrets Manager** (AWS) / **SOPS+age** (self-host).
 
 ---
 
