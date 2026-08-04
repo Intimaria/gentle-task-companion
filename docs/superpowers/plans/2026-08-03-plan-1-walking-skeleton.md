@@ -4,11 +4,13 @@
 
 **Goal:** Una rebanada vertical end-to-end — un usuario autenticado registra un check-in de ánimo (`POST /moods`) y ve su historial (`GET /moods`) — corriendo sobre el build **self-hosted** (DynamoDB Local + OIDC dev), con el código escrito contra interfaces portables (API DynamoDB + OIDC) y con tests.
 
-**Architecture:** Backend portable separado del front Next.js, en `backend/`. Handlers puros con **Hono** (corren en Node hoy y en Lambda en el Plan 4 sin cambios). Capa de datos con AWS SDK v3 DocumentClient apuntando a un endpoint configurable (`DYNAMODB_ENDPOINT` → DynamoDB Local | ScyllaDB Alternator | AWS). Auth por **OIDC**: middleware que valida JWT contra un issuer configurable (Authentik/Cognito/dev-OIDC). Todo se levanta con `docker-compose.selfhosted.yml`.
+**Architecture:** Backend portable separado del front Next.js, en `backend/`. Handlers puros con **Hono** (corren en Node hoy y en Lambda en el Plan 4 sin cambios). Capa de datos con AWS SDK v3 DocumentClient apuntando a un endpoint configurable (`DYNAMODB_ENDPOINT` → DynamoDB Local | ScyllaDB Alternator | AWS). Auth por **OIDC**: middleware que valida JWT contra un issuer configurable (Authentik/Cognito/dev-OIDC). Todo se levanta con `docker-compose.yml`.
 
 **Tech Stack:** TypeScript (ESM, Node 20), Hono + `@hono/node-server`, `@aws-sdk/client-dynamodb` + `@aws-sdk/lib-dynamodb`, `jose` (JWT/OIDC), Vitest, `tsx`. DynamoDB Local y `mock-oauth2-server` como contenedores de dev.
 
 **Alcance de este plan:** solo el backend vertical (datos + auth + handlers de ánimo), demostrable vía HTTP autenticado (curl). El cableado de la UI React y el resto del dominio (tasks/gratitudes/dashboard) van en el Plan 2.
+
+**Directorio de trabajo:** TODO el código de este plan vive en `Entregables/inti-maria-tidball/app/` dentro del repo de la **entrega** (`arq-nube-2026`, rama `entrega/inti-maria-tidball`). Los paths de abajo son relativos a esa carpeta `app/`; `docker compose up` se corre desde ahí (convención del `Entregables/ejemplo/`). Los commits van a ese repo. (El spec y este plan viven aparte, en el repo `gentle-task-companion`.)
 
 **Modelo de datos (del spec §4):** tabla `gentle`, `PK = USER#<sub>`. Ítem de ánimo: `SK = MOOD#<ISO-ts>`, atributos `{ type: "mood", mood, note?, createdAt }`.
 
@@ -16,31 +18,37 @@
 
 ## File Structure
 
+Todo dentro de `Entregables/inti-maria-tidball/app/` (repo `arq-nube-2026`):
+
 ```
-backend/
-  package.json            # deps + scripts del backend portable
-  tsconfig.json
-  vitest.config.ts
-  src/
-    data/
-      client.ts           # factory del DocumentClient (endpoint configurable)
-      table.ts            # nombre de tabla + helpers de claves (PK/SK)
-      moods.ts            # repositorio de ánimo (createMood, listMoods)
-    auth/
-      oidc.ts             # middleware Hono de verificación JWT/OIDC
-    app.ts                # app Hono (rutas) — handlers puros, con DI
-    server.ts             # adaptador Node (sirve la app en un puerto)
-  test/
-    setup.ts              # vitest globalSetup: crea la tabla en DynamoDB Local
-    moods.test.ts
-    auth.test.ts
-    app.test.ts
-  scripts/
-    create-table.ts       # bootstrap de la tabla (portable, endpoint configurable)
-  Dockerfile
-docker-compose.selfhosted.yml
-.env.selfhosted.example
+app/
+  docker-compose.yml        # levanta el stack self-hosted (se corre desde app/)
+  .env.example
+  backend/
+    package.json            # deps + scripts del backend portable
+    tsconfig.json
+    vitest.config.ts
+    Dockerfile
+    src/
+      data/
+        client.ts           # factory del DocumentClient (endpoint configurable)
+        table.ts            # nombre de tabla + helpers de claves (PK/SK)
+        moods.ts            # repositorio de ánimo (createMood, listMoods)
+      auth/
+        oidc.ts             # middleware Hono de verificación JWT/OIDC
+      types.d.ts            # tipo de la variable de contexto `sub`
+      app.ts                # app Hono (rutas) — handlers puros, con DI
+      server.ts             # adaptador Node (sirve la app en un puerto)
+    scripts/
+      create-table.ts       # bootstrap de la tabla (portable, endpoint configurable)
+    test/
+      setup.ts              # vitest globalSetup: crea la tabla en DynamoDB Local
+      table.test.ts
+      moods.test.ts
+      auth.test.ts
+      app.test.ts
 ```
+(el front Next.js se copia a `app/frontend/` en el Plan 2)
 
 ---
 
@@ -760,12 +768,12 @@ git commit -m "feat(backend): node server adapter + dockerfile"
 ## Task 6: docker-compose self-hosted + smoke test end-to-end
 
 **Files:**
-- Create: `docker-compose.selfhosted.yml` (raíz del repo)
-- Create: `.env.selfhosted.example` (raíz del repo)
+- Create: `docker-compose.yml` (en la raíz de app/)
+- Create: `.env.example` (en la raíz de app/)
 
-- [ ] **Step 1: Escribir `.env.selfhosted.example`**
+- [ ] **Step 1: Escribir `.env.example`**
 
-`.env.selfhosted.example`:
+`.env.example`:
 ```bash
 # Datos (API DynamoDB) — DynamoDB Local en self-host
 DYNAMODB_ENDPOINT=http://dynamodb-local:8000
@@ -782,9 +790,9 @@ OIDC_AUDIENCE=gentle
 PORT=8080
 ```
 
-- [ ] **Step 2: Escribir `docker-compose.selfhosted.yml`**
+- [ ] **Step 2: Escribir `docker-compose.yml`**
 
-`docker-compose.selfhosted.yml`:
+`docker-compose.yml`:
 ```yaml
 services:
   dynamodb-local:
@@ -818,7 +826,7 @@ services:
     depends_on:
       - dynamodb-local
       - mock-oidc
-    env_file: .env.selfhosted.example
+    env_file: .env.example
     ports:
       - "8080:8080"
 ```
@@ -834,7 +842,7 @@ COPY scripts ./scripts
 
 - [ ] **Step 4: Levantar el stack**
 
-Run: `docker compose -f docker-compose.selfhosted.yml up --build -d`
+Run: `docker compose -f docker-compose.yml up --build -d`
 Expected: `dynamodb-local`, `mock-oidc` y `backend` corriendo; `create-table` corre una vez y termina (exit 0).
 
 - [ ] **Step 5: Smoke test end-to-end (token del mock-oidc → POST → GET)**
@@ -862,12 +870,12 @@ Nota de config: el `sub`/issuer/audience emitidos por `mock-oauth2-server` deben
 
 - [ ] **Step 6: Bajar el stack**
 
-Run: `docker compose -f docker-compose.selfhosted.yml down`
+Run: `docker compose -f docker-compose.yml down`
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add docker-compose.selfhosted.yml .env.selfhosted.example backend/Dockerfile
+git add docker-compose.yml .env.example backend/Dockerfile
 git commit -m "feat: self-hosted docker-compose (dynamodb-local + oidc + backend) with e2e smoke test"
 ```
 
