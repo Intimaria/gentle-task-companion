@@ -1,4 +1,4 @@
-# Gentle Task Companion — Rediseño serverless en AWS
+# Gentle Task Companion — Rediseño serverless portable (AWS + self-hosted)
 
 **Fecha:** 2026-08-03
 **Autora:** Inti Tidball
@@ -12,8 +12,8 @@
 Modernizar **Gentle Task Companion** (app de autocuidado para personas neurodivergentes:
 ánimo, tareas, gratitud, tarjetas de comunicación, sonidos, página de crisis) migrando su
 backend desde Supabase — que fue una solución del momento, no sostenible — hacia una
-arquitectura **serverless nativa de AWS**, y sumando un feature nuevo de **animalitos
-reconfortantes** basado en Lambda + S3.
+arquitectura **serverless y portable** (corre igual en AWS o en un stack self-hosted gratuito),
+y sumando un feature nuevo de **animalitos reconfortantes** basado en Lambda/S3.
 
 El trabajo cumple dos objetivos a la vez:
 
@@ -23,10 +23,15 @@ El trabajo cumple dos objetivos a la vez:
 
 ### Requisitos no negociables (definidos por la usuaria)
 
-- **Login concreto de AWS** → Amazon Cognito (reemplaza la auth anónima de Supabase).
-- **Cifrado TODO, in-transit y at-rest** → TLS en tránsito + KMS at-rest (DynamoDB y S3).
+- **Login real** → autenticación OIDC. En AWS = Amazon Cognito; en self-host = Authentik/Authelia
+  (mismo estándar, se cambia por config). Reemplaza la auth anónima de Supabase.
+- **Cifrado TODO, in-transit y at-rest** → TLS en tránsito + cifrado at-rest (KMS en AWS; SSE de
+  MinIO/Scylla + LUKS en self-host).
 - **Estado persistente** → los datos se guardan y siguen ahí al volver.
 - **Aislamiento real por usuaria** → nadie ve datos de otra persona.
+- **Portabilidad / sin lock-in (objetivo primario)** → el MISMO código debe correr en AWS y en un
+  stack self-hosted gratuito. Motivo real: no hay presupuesto para AWS en producción; la app se
+  desplegará en el homelab de la autora (Proxmox/VM + Cloudflare Tunnel, o cluster k8s Talos).
 
 ---
 
@@ -108,6 +113,31 @@ en el puerto `:4566`. Soporta Cognito, DynamoDB, Lambda, S3, API Gateway, KMS y 
 licencia. Se eligió sobre LocalStack porque LocalStack movió servicios core (y Cognito) a su
 edición Pro paga.
 
+### Portabilidad (anti-lock-in) — objetivo primario
+
+La app se escribe contra **interfaces portables**, no contra APIs propietarias, para correr el
+**mismo código** en AWS y en un stack self-hosted gratuito (homelab: Proxmox/VM + Cloudflare
+Tunnel, o cluster k8s Talos). El destino se elige por configuración (endpoints / issuer OIDC).
+
+| Rol | AWS (diseño/TP) | Self-hosted gratis (homelab) | Interfaz portable |
+|---|---|---|---|
+| Objetos/imágenes | S3 | MinIO | API S3 |
+| Datos | DynamoDB | ScyllaDB Alternator (prod) / DynamoDB Local (dev) | API DynamoDB |
+| Auth | Cognito | Authentik (o Authelia/Zitadel) | OIDC (JWT estándar) |
+| Compute | Lambda | contenedor (VM) / Deployment (k8s) | handler puro + adaptador |
+| Ingress | API Gateway | Caddy/Traefik + Cloudflare Tunnel | HTTP |
+| Cifrado at-rest | KMS | SSE de MinIO/Scylla + LUKS | — |
+
+- **Datos:** ScyllaDB Alternator expone la API de DynamoDB → el mismo SDK y el mismo modelo
+  single-table corren en AWS y en casa. Dev local liviano con DynamoDB Local.
+- **Auth:** único punto sin drop-in de producción. Se abstrae por **OIDC**: la app valida JWT
+  OIDC estándar; el emisor es Cognito (AWS) o un IdP OSS liviano (self-host). En el front se usa
+  un cliente OIDC genérico en vez del SDK Amplify. **Authentik** es el preferido (IdP OIDC
+  completo, más liviano que Keycloak; la autora ya lo corre en su cluster Talos); Authelia/Zitadel
+  como alternativas.
+- **Compute:** la lógica vive en funciones puras (`event → result`); un adaptador fino la corre
+  como Lambda (AWS) o como servidor HTTP en contenedor (VM/k8s).
+
 ---
 
 ## 4. Modelo de datos (DynamoDB single-table)
@@ -151,10 +181,11 @@ relacional se reemplaza por una sola `Query` a la partición.
 
 ### Auth
 
-1. Registro/login con Cognito (Amplify Auth en el front) → Cognito emite JWT.
-2. El front envía `Authorization: Bearer <token>` a API Gateway.
-3. El **JWT authorizer** de API Gateway valida firma/emisor/audiencia contra el User Pool y
-   extrae los claims.
+1. Registro/login vía **OIDC** (cliente OIDC genérico en el front) → el emisor emite JWT.
+   Emisor = Cognito en AWS, Authentik/Authelia en self-host (se cambia por config).
+2. El front envía `Authorization: Bearer <token>` al ingress (API Gateway o reverse proxy).
+3. Un **validador JWT/OIDC** (JWT authorizer de API Gateway en AWS; middleware en el handler en
+   self-host) valida firma/emisor/audiencia contra el issuer y extrae los claims.
 4. La Lambda lee `event.requestContext.authorizer.jwt.claims.sub` y lo usa como `PK`.
    **Nunca confía en un `user_id` del body** → cierra el bug de aislamiento del diseño viejo.
 
@@ -217,46 +248,80 @@ Imágenes SSE-KMS at-rest; URLs prefirmadas sobre HTTPS in-transit.
   partición. Reforzable con condición IAM `dynamodb:LeadingKeys`. Corrige el RLS roto.
 - **Cifrado at-rest:** KMS (CMK) sobre DynamoDB y S3.
 - **Cifrado in-transit:** TLS/HTTPS en CloudFront, API Gateway y URLs prefirmadas.
+- **En self-host:** cifrado at-rest con SSE de MinIO/ScyllaDB + LUKS en la VM; TLS vía Cloudflare
+  Tunnel; secretos con SOPS/age (como ya usa el homelab).
 - **Mínimo privilegio:** roles IAM por Lambda acotados a sus recursos.
 - **Secretos:** sin claves en el código; parámetros vía variables de entorno / (en AWS)
   Secrets Manager si hicieran falta.
 
 ---
 
-## 8. Cómo corre local (Ministack) y mapeo a AWS
+## 8. Costos (estimación en AWS real)
 
-- `docker compose up` levanta **Ministack** (`:4566`) + el front Next.js.
-- Un script de bootstrap crea los recursos vía AWS CLI/SDK apuntando a `--endpoint-url
-  http://localhost:4566`: User Pool de Cognito, tabla `gentle`, bucket `gentle-animals`, CMK
-  de KMS, las 2 Lambdas y las rutas de API Gateway; y siembra las imágenes curadas.
-- El front usa `AWS_ENDPOINT_URL` para hablar con Ministack en local y con AWS real en el
-  diseño. **El código no cambia entre entornos.**
+Modelo 100% serverless y on-demand → **escala a cero**: sin tráfico, casi sin costo.
+Uso esperado bajo (app personal / demo).
 
-Este `docker compose` funcionando (con screenshot) cubre el criterio "app dockerizada" del TP
-con la arquitectura cloud real, no con un mock.
+| Servicio | Modelo de precio | Free tier | Costo a uso bajo |
+|---|---|---|---|
+| Cognito | por MAU | 50.000 MAU gratis | ~$0 |
+| Lambda | por invocación + GB-s | 1M req + 400k GB-s/mes | ~$0 |
+| API Gateway HTTP | por request | 1M req/mes (12 meses) | ~$0–1 |
+| DynamoDB on-demand | lectura/escritura + almacenamiento | 25 GB + límites gratis | ~$0–1 |
+| S3 | almacenamiento + requests | 5 GB (12 meses) | centavos |
+| KMS | $1/CMK/mes + requests | 20k req/mes | ~$1/mes |
+| CloudFront | transferencia + requests | 1 TB/mes (siempre) | ~$0 |
+| CloudWatch | logs/métricas | límites gratis | ~$0 |
+
+- **Servicio más costoso a baja escala:** KMS (~$1/mes por la CMK); luego CloudFront/DynamoDB
+  si crece tráfico/almacenamiento.
+- **Estimado a uso bajo:** < $2–3 USD/mes. A uso cero: ~$1/mes (solo la CMK).
+- **Optimización:** on-demand en vez de capacidad provisionada; escala a cero; URLs
+  prefirmadas (sin servidor de media); imágenes optimizadas en S3; una sola CMK compartida.
+- **Qué evitar en v1:** NAT Gateway, RDS, instancias 24/7, Managed Grafana (se usa CloudWatch).
+- **Local = $0:** Ministack es gratis (MIT); desarrollar/testear no cuesta.
 
 ---
 
-## 9. Alcance del TP y mapeo a la rúbrica
+## 9. Despliegue — dos builds del mismo código
+
+**Build 1 — self-hosted (la app real de la autora).** `docker compose up` levanta MinIO (S3) +
+ScyllaDB Alternator (DynamoDB) + Authentik (OIDC) + los contenedores del front y de los handlers.
+Corre en una VM del homelab (Proxmox) expuesta con **Cloudflare Tunnel** + DNS; a futuro,
+microservicios en el cluster **Talos**. Cifrado at-rest con SSE de MinIO/Scylla + LUKS. Costo: $0.
+
+**Build 2 — Ministack (AWS emulado, para el TP).** `docker compose up` levanta **Ministack**
+(`:4566`) + el front. Un script de bootstrap crea los recursos vía AWS CLI/SDK con
+`--endpoint-url http://localhost:4566`: User Pool de Cognito, tabla `gentle`, bucket
+`gentle-animals`, CMK de KMS, las 2 Lambdas y las rutas de API Gateway; y siembra las imágenes.
+
+En ambos, el destino se elige por config (endpoints / issuer OIDC): **el código no cambia**.
+Cualquiera de los dos `docker compose` funcionando (con screenshot) cubre el criterio "app
+dockerizada" del TP con arquitectura real, no un mock.
+
+---
+
+## 10. Alcance del TP y mapeo a la rúbrica
 
 | Doc de la rúbrica | Fuente en este diseño |
 |---|---|
 | `01-descripcion.md` | §1 (app, usuarias, por qué NoSQL/DynamoDB) |
-| `02-arquitectura-local.md` | §8 (Ministack + docker-compose) |
+| `02-arquitectura-local.md` | §9 (Ministack + docker-compose) |
 | `03-arquitectura-aws.md` | §3 + §5 + §6 (servicios y justificación) |
 | `04-well-architected.md` | §7 (Seguridad) + pilares (a completar) |
-| `05-costos.md` | serverless on-demand, escala a cero (a completar) |
-| `06-disaster-recovery.md` | §10 (semilla de riesgos/DR) |
+| `05-costos.md` | §8 (estimación de costos) |
+| `06-disaster-recovery.md` | §11 (semilla de riesgos/DR) |
 | `diagrams/arquitectura-aws.png` | §3 (diagrama, a pasar a draw.io) |
 | `app/` | la app dockerizada (§8) |
 
-**Construimos:** backend nuevo (Cognito, 2 Lambdas, DynamoDB, S3/KMS) corriendo en Ministack,
-front rewireado en su capa de datos/auth, y el feature de animalitos.
-**Diseñamos (docs):** el mapeo a AWS real, pilares Well-Architected, costos y DR.
+**Construimos:** backend portable nuevo (handlers puros + capa de datos API-DynamoDB + API-S3 +
+OIDC), front rewireado, y el feature de animalitos — corriendo en los dos builds (self-hosted y
+Ministack).
+**Diseñamos (docs):** el mapeo a AWS real, la narrativa de evolución (Supabase → self-hosted →
+AWS), pilares Well-Architected, costos y DR.
 
 ---
 
-## 10. Semilla de Disaster Recovery / riesgos (para `06`)
+## 11. Semilla de Disaster Recovery / riesgos (para `06`)
 
 - **Datos sensibles de salud mental** → privacidad/compliance; cifrado at-rest + in-transit;
   mínimo acceso; el usuario puede borrar sus datos.
@@ -269,7 +334,7 @@ front rewireado en su capa de datos/auth, y el feature de animalitos.
 
 ---
 
-## 11. Fuera de alcance / futuro
+## 12. Fuera de alcance / futuro
 
 - Rediseño visual/UX de la app (se conversará después).
 - Fallback a API externa de imágenes (stretch).
