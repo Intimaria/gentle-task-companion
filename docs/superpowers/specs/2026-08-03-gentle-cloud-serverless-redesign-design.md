@@ -1,0 +1,277 @@
+# Gentle Task Companion — Rediseño serverless en AWS
+
+**Fecha:** 2026-08-03
+**Autora:** Inti Tidball
+**Contexto:** Trabajo Práctico Final — Arquitectura de Nube 2026 (AWS Women in Cloud, Buenos Aires)
+**Estado:** Diseño aprobado, pendiente de plan de implementación
+
+---
+
+## 1. Objetivo
+
+Modernizar **Gentle Task Companion** (app de autocuidado para personas neurodivergentes:
+ánimo, tareas, gratitud, tarjetas de comunicación, sonidos, página de crisis) migrando su
+backend desde Supabase — que fue una solución del momento, no sostenible — hacia una
+arquitectura **serverless nativa de AWS**, y sumando un feature nuevo de **animalitos
+reconfortantes** basado en Lambda + S3.
+
+El trabajo cumple dos objetivos a la vez:
+
+1. **Mejorar la app de verdad** (backend sostenible, seguridad real, historial útil).
+2. **Servir como TP** de arquitectura cloud: la misma arquitectura corre local (emulada) y
+   se documenta como diseño AWS.
+
+### Requisitos no negociables (definidos por la usuaria)
+
+- **Login concreto de AWS** → Amazon Cognito (reemplaza la auth anónima de Supabase).
+- **Cifrado TODO, in-transit y at-rest** → TLS en tránsito + KMS at-rest (DynamoDB y S3).
+- **Estado persistente** → los datos se guardan y siguen ahí al volver.
+- **Aislamiento real por usuaria** → nadie ve datos de otra persona.
+
+---
+
+## 2. Problemas del diseño actual (por qué se rehace)
+
+Del `schema.sql` y de `src/lib/dailyEntryApi.tsx`:
+
+1. **Tasks y gratitudes se borran y recrean en cada guardado** (`saveFullEntry` hace `DELETE`
+   + `INSERT`). Se pierde el `created_at` real, la identidad de cada ítem cambia, y el estado
+   "completada" solo refleja el último guardado → **el historial de qué se completó y cuándo
+   es poco confiable**.
+2. **El ánimo es un único valor por día, sobrescribible** (`upsert` por `user_id,date`). No
+   hay trayectoria intra-día ni registro de cambios.
+3. **RLS inseguro (bug de privacidad):** las policies chequean `auth.role() = 'authenticated'`
+   pero **no** `user_id = auth.uid()`. Cualquier usuaria autenticada podía leer/editar/borrar
+   filas de otras. Con datos en texto plano y de salud mental, es un agujero grave. La policy
+   de DELETE de `contacts` además está mal escrita como `SELECT`.
+4. **`contact` duplicado:** existe `entries.contact` (texto) *y* una tabla `contacts`. Dos
+   fuentes de verdad.
+5. **`contacts` es en realidad UN contacto** (`UNIQUE(user_id)`), mal nombrado en plural.
+
+### Principio del rediseño
+
+Reemplazar "borrar y recrear" por **eventos append-only y timestamped** e **ítems de primera
+clase con ciclo de vida** (una tarea nace y se completa con su `completedAt`, nunca se
+destruye). Esto **arregla los bugs** y **habilita las vistas de historial** deseadas. El
+aislamiento por usuaria se vuelve inherente al modelo (ver §4 y §6).
+
+---
+
+## 3. Arquitectura general
+
+Una sola topología que corre igual local (Ministack) y en AWS. Solo cambia el endpoint
+(`http://localhost:4566` vs. endpoints reales de AWS). **El mismo código es la demo y el
+diseño.**
+
+```
+[Usuaria / PWA]
+   │ HTTPS / TLS
+   ▼
+Next.js PWA (gentle-task-companion)
+   │  · Amplify Auth (Cognito) para login
+   │  · cliente de datos → API Gateway con JWT
+   ▼
+Cognito User Pool ──(JWT)──► API Gateway HTTP (JWT authorizer)
+                                   │
+                        ┌──────────┴───────────┐
+                        ▼                      ▼
+                 Lambda core-api         Lambda companion
+             (ánimo/tareas/gratitud)   (animalitos: select/upload)
+                        │                      │
+                        ▼                      ▼
+                   DynamoDB               S3 (imágenes)
+                 (single-table)          curadas + subidas
+                        │                      │
+                        └──── KMS (cifrado at-rest) ────┘
+
+Observabilidad: CloudWatch logs/métricas (local: logs de Ministack)
+```
+
+### Componentes
+
+| Componente | Local (Ministack) | AWS (diseño) |
+|---|---|---|
+| Frontend | Next.js en contenedor | S3 + CloudFront (o Amplify Hosting) |
+| Auth | Cognito emulado (Ministack) | Amazon Cognito User Pool |
+| API | API Gateway HTTP emulado | API Gateway HTTP + JWT authorizer |
+| Compute | 2 Lambdas (Node/TS) | AWS Lambda |
+| Datos | DynamoDB emulado | Amazon DynamoDB (on-demand) |
+| Media | S3 emulado | Amazon S3 (privado) |
+| Cripto | KMS emulado | AWS KMS (CMK) |
+
+**Enfoque elegido: A — slice vertical lean.** Dos Lambdas (no microservicios por dominio, no
+mínimo con restos de Supabase). Saca Supabase del todo, muestra todos los servicios objetivo
+y mapea 1:1 a AWS, con riesgo acotado.
+
+**Emulador local: Ministack** (MIT, gratis, argentino — Nahuel Nucera), drop-in de LocalStack
+en el puerto `:4566`. Soporta Cognito, DynamoDB, Lambda, S3, API Gateway, KMS y SNS sin
+licencia. Se eligió sobre LocalStack porque LocalStack movió servicios core (y Cognito) a su
+edición Pro paga.
+
+---
+
+## 4. Modelo de datos (DynamoDB single-table)
+
+Tabla `gentle`, `PK = USER#<sub>` (el `sub` de Cognito). Todo lo de una persona vive en su
+partición; la **sort key es el tipo de cosa** y los atributos son el estado. El "join"
+relacional se reemplaza por una sola `Query` a la partición.
+
+| Ítem | SK | Atributos | Habilita |
+|---|---|---|---|
+| Perfil | `PROFILE` | preferredSpecies, locale, emergencyContact{name,phone} | preferencias + contacto de emergencia embebido |
+| Check-in de ánimo | `MOOD#<ISO-ts>` | mood, note? | trayectoria de ánimo + intra-día |
+| Tarea | `TASK#<ulid>` | text, status, createdAt, completedAt | registro de tareas completadas |
+| Gratitud | `GRAT#<ISO-ts>` | text | diario de gratitud |
+| Animalito | `ANIMAL#<ulid>` | species, mood, s3Key, source | galería de animalitos |
+| Stats (opcional) | `STATS` | streakDays, tasksDone, lastActive | rachas / estadísticas |
+
+### Decisiones
+
+- **Contacto de emergencia embebido en `PROFILE`** (era 1 por usuaria) → elimina la tabla
+  `contacts` y `entries.contact` (resuelve la duplicación y el naming).
+- **Desaparece "entry" como contenedor del día:** el ánimo es un log timestamped; tareas y
+  gratitudes son ítems de primera clase. **Se elimina el patrón delete+reinsert.**
+- **GSI1 opcional** para "tareas completadas por fecha": `GSI1PK = USER#<sub>`,
+  `GSI1SK = DONE#<completedAt>` (solo se setea al completar) → timeline ordenado. YAGNI para
+  el MVP (se calcula en la Lambda a partir de los ítems `TASK#`); queda anotado para escala.
+- **Cifrado at-rest** de la tabla con KMS (CMK).
+
+### Patrones de acceso (todas single-partition, sin joins)
+
+- Dashboard de hoy → `Query PK=USER#<sub>` (arma todo en un request).
+- Trayectoria de ánimo → `SK begins_with "MOOD#"` (ordenado por timestamp); mes actual →
+  `begins_with "MOOD#2026-08-"`.
+- Tareas → `SK begins_with "TASK#"`; completadas → filtrar por `completedAt` (o GSI1).
+- Diario de gratitud → `SK begins_with "GRAT#"`, orden inverso.
+- Rachas/estadísticas → se calculan en la Lambda desde los ítems, o vía ítem `STATS`.
+
+---
+
+## 5. API + Lambdas + flujo de autenticación
+
+### Auth
+
+1. Registro/login con Cognito (Amplify Auth en el front) → Cognito emite JWT.
+2. El front envía `Authorization: Bearer <token>` a API Gateway.
+3. El **JWT authorizer** de API Gateway valida firma/emisor/audiencia contra el User Pool y
+   extrae los claims.
+4. La Lambda lee `event.requestContext.authorizer.jwt.claims.sub` y lo usa como `PK`.
+   **Nunca confía en un `user_id` del body** → cierra el bug de aislamiento del diseño viejo.
+
+### Endpoints
+
+**core-api Lambda**
+
+- `GET /dashboard` — today view (una Query a la partición arma todo)
+- `POST /moods` · `GET /moods?from=&to=` — check-in de ánimo + trayectoria
+- `POST /tasks` · `PATCH /tasks/{id}` (completar) · `GET /tasks?status=`
+- `POST /gratitudes` · `GET /gratitudes` — diario
+- `GET /me` · `PUT /me` — perfil / preferencias
+
+**companion Lambda**
+
+- `GET /companion?species=&mood=` — elige imagen → URL prefirmada
+- `POST /companion/upload-url` — presigned PUT
+- `POST /companion` — confirma subida (registra `ANIMAL#`)
+
+### IAM mínimo privilegio
+
+- `core-api` → solo DynamoDB (Query/PutItem/UpdateItem sobre `gentle`) + KMS decrypt.
+- `companion` → solo S3 (Get/Put sobre `gentle-animals`) + `ANIMAL#` en DynamoDB + KMS.
+- Sin permisos cruzados entre Lambdas.
+
+---
+
+## 6. Feature de animalitos (S3 + Lambda + KMS)
+
+Companion emocional multi-especie: la persona elige su animal preferido (gato, capivara,
+perro, pájaro) y, según su estado, ve un animalito que lo refleja.
+
+Bucket `gentle-animals` privado, **SSE-KMS**:
+
+- Curadas: `curated/<especie>/<ánimo>/<n>.gif` (sembradas al levantar el stack).
+- Subidas: `users/<sub>/<especie>/<ánimo>/<ulid>.<ext>` (aisladas por usuaria en el prefijo).
+
+### Flujos
+
+- **Select:** `GET /companion?species=capybara&mood=triste` → la Lambda combina imágenes
+  curadas + subidas de la usuaria, elige una (aleatoria/rotativa) y devuelve una **URL
+  prefirmada** (expira en minutos). El bucket nunca se expone públicamente.
+- **Upload:** `POST /companion/upload-url` con `{species, mood, contentType}` → la Lambda
+  genera un **presigned PUT** al key `users/<sub>/...` → el front sube **directo a S3** (no
+  pasa por la Lambda) → `POST /companion` confirma y guarda el ítem `ANIMAL#` en DynamoDB.
+- **Opcional (stretch):** si no hay imagen para esa especie/ánimo, fallback a una API externa
+  (TheCatAPI / TheDogAPI).
+
+### Cifrado
+
+Imágenes SSE-KMS at-rest; URLs prefirmadas sobre HTTPS in-transit.
+
+---
+
+## 7. Seguridad y cifrado (pilar Seguridad)
+
+- **Autenticación:** Cognito User Pool (registro/verificación por email, MFA opcional, JWT).
+- **Autorización:** JWT authorizer en API Gateway; sin endpoints públicos.
+- **Aislamiento por usuaria:** `PK = USER#<sub-del-JWT>`; la Lambda nunca consulta otra
+  partición. Reforzable con condición IAM `dynamodb:LeadingKeys`. Corrige el RLS roto.
+- **Cifrado at-rest:** KMS (CMK) sobre DynamoDB y S3.
+- **Cifrado in-transit:** TLS/HTTPS en CloudFront, API Gateway y URLs prefirmadas.
+- **Mínimo privilegio:** roles IAM por Lambda acotados a sus recursos.
+- **Secretos:** sin claves en el código; parámetros vía variables de entorno / (en AWS)
+  Secrets Manager si hicieran falta.
+
+---
+
+## 8. Cómo corre local (Ministack) y mapeo a AWS
+
+- `docker compose up` levanta **Ministack** (`:4566`) + el front Next.js.
+- Un script de bootstrap crea los recursos vía AWS CLI/SDK apuntando a `--endpoint-url
+  http://localhost:4566`: User Pool de Cognito, tabla `gentle`, bucket `gentle-animals`, CMK
+  de KMS, las 2 Lambdas y las rutas de API Gateway; y siembra las imágenes curadas.
+- El front usa `AWS_ENDPOINT_URL` para hablar con Ministack en local y con AWS real en el
+  diseño. **El código no cambia entre entornos.**
+
+Este `docker compose` funcionando (con screenshot) cubre el criterio "app dockerizada" del TP
+con la arquitectura cloud real, no con un mock.
+
+---
+
+## 9. Alcance del TP y mapeo a la rúbrica
+
+| Doc de la rúbrica | Fuente en este diseño |
+|---|---|
+| `01-descripcion.md` | §1 (app, usuarias, por qué NoSQL/DynamoDB) |
+| `02-arquitectura-local.md` | §8 (Ministack + docker-compose) |
+| `03-arquitectura-aws.md` | §3 + §5 + §6 (servicios y justificación) |
+| `04-well-architected.md` | §7 (Seguridad) + pilares (a completar) |
+| `05-costos.md` | serverless on-demand, escala a cero (a completar) |
+| `06-disaster-recovery.md` | §10 (semilla de riesgos/DR) |
+| `diagrams/arquitectura-aws.png` | §3 (diagrama, a pasar a draw.io) |
+| `app/` | la app dockerizada (§8) |
+
+**Construimos:** backend nuevo (Cognito, 2 Lambdas, DynamoDB, S3/KMS) corriendo en Ministack,
+front rewireado en su capa de datos/auth, y el feature de animalitos.
+**Diseñamos (docs):** el mapeo a AWS real, pilares Well-Architected, costos y DR.
+
+---
+
+## 10. Semilla de Disaster Recovery / riesgos (para `06`)
+
+- **Datos sensibles de salud mental** → privacidad/compliance; cifrado at-rest + in-transit;
+  mínimo acceso; el usuario puede borrar sus datos.
+- **RPO/RTO:** DynamoDB PITR (point-in-time recovery) + backups; S3 versioning. RPO bajo
+  (minutos con PITR), RTO acotado (restore de tabla/bucket).
+- **Escenarios:** caída de AZ (servicios gestionados multi-AZ), corrupción/borrado accidental
+  (PITR + versioning), error humano (backups), fallo regional (estrategia Backup & Restore /
+  Pilot Light a definir).
+- **Bug histórico corregido:** aislamiento por usuaria (antes RLS roto).
+
+---
+
+## 11. Fuera de alcance / futuro
+
+- Rediseño visual/UX de la app (se conversará después).
+- Fallback a API externa de imágenes (stretch).
+- Moderación de contenido de imágenes subidas.
+- Migración de datos: no aplica (la app no tiene datos en producción).
