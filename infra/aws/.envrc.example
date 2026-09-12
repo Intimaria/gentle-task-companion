@@ -1,0 +1,24 @@
+# PLANTILLA — copiar a `.envrc` y correr `direnv allow` una vez.
+# Aísla ESTE proyecto de las credenciales AWS reales de la máquina: ningún `aws`/`tofu`
+# de acá puede usar tu identidad real por accidente. Triple candado:
+#   (1) archivo de credenciales local (no ~/.aws)  (2) perfil dummy  (3) endpoint a MiniStack.
+#
+# El .envrc real está gitignoreado (es entorno local). Esta plantilla se versiona
+# para documentar el setup.
+
+# (1) NO usar ~/.aws — archivo de credenciales/config local al proyecto.
+export AWS_SHARED_CREDENTIALS_FILE="$PWD/.aws/credentials"
+export AWS_CONFIG_FILE="$PWD/.aws/config"
+
+# (2) Perfil dedicado con credenciales dummy (MiniStack no las valida).
+export AWS_PROFILE=ministack
+export AWS_REGION=us-east-1
+export AWS_DEFAULT_REGION=us-east-1
+
+# (3) Todo apunta al emulador. Aunque un comando olvide --endpoint-url, va a localhost.
+export AWS_ENDPOINT_URL=http://localhost:4566
+
+# Defensa extra: si el shell padre exporta credenciales REALES, las pisamos con dummy.
+export AWS_ACCESS_KEY_ID=test
+export AWS_SECRET_ACCESS_KEY=test
+unset AWS_SESSION_TOKEN

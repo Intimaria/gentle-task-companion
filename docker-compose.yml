@@ -1,0 +1,97 @@
+# Stack self-hosted de Gentle Task Companion (frontend + backend).
+# Se corre desde esta carpeta: `docker compose up --build`
+#   Frontend: http://localhost:3000  ·  Backend API: http://localhost:8080  ·  OIDC dev: http://localhost:8081
+#
+# Auth: `mock-oidc` es un emisor OIDC de DESARROLLO (login interactivo, cualquier usuario).
+# La validación de JWT del backend es REAL; en producción el issuer se cambia por config a
+# Cognito (AWS) o Authentik (self-host). NUNCA usar mock-oidc en producción.
+name: gentle
+
+services:
+  # ScyllaDB con API Alternator (compatible DynamoDB) — motor de datos self-hosted.
+  scylla:
+    image: scylladb/scylla:2026.2.2
+    command: --alternator-port=8000 --alternator-write-isolation=always --smp=1 --memory=1G --overprovisioned=1 --developer-mode=1
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status | grep -q '^UN'"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 60s
+
+  # Emisor OIDC de DESARROLLO. Login interactivo (authorization_code + PKCE para el navegador);
+  # también responde client_credentials (para el smoke del backend). aud=gentle en ambos.
+  mock-oidc:
+    image: ghcr.io/navikt/mock-oauth2-server:2.1.10
+    environment:
+      SERVER_PORT: "8080"
+      JSON_CONFIG: '{"interactiveLogin":true,"httpServer":"NettyWrapper","tokenCallbacks":[{"issuerId":"default","tokenExpiry":3600,"requestMappings":[{"requestParam":"grant_type","match":"authorization_code","claims":{"aud":["gentle"]}},{"requestParam":"scope","match":"openid","claims":{"sub":"demo-user","aud":["gentle"]}}]}]}'
+    ports:
+      - "8081:8080"
+
+  # MinIO — almacenamiento de objetos S3-compatible (favoritos de animalitos).
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  # Crea el bucket `gentle-media` una sola vez (espera a que MinIO esté listo).
+  create-bucket:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      - minio
+    entrypoint: >
+      sh -c "until mc alias set local http://minio:9000 minioadmin minioadmin; do echo 'esperando minio'; sleep 2; done && mc mb --ignore-existing local/gentle-media && echo 'bucket listo'"
+    restart: "no"
+
+  # Crea la tabla `gentle` en Scylla vía API DynamoDB, una sola vez.
+  create-table:
+    build: ./backend
+    depends_on:
+      scylla:
+        condition: service_healthy
+    environment:
+      DYNAMODB_ENDPOINT: http://scylla:8000
+      TABLE_NAME: gentle
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+    command: ["npx", "tsx", "scripts/create-table.ts"]
+    restart: "no"
+
+  backend:
+    build: ./backend
+    depends_on:
+      scylla:
+        condition: service_healthy
+      create-table:
+        condition: service_completed_successfully
+      create-bucket:
+        condition: service_completed_successfully
+      mock-oidc:
+        condition: service_started
+    env_file: .env.example
+    ports:
+      - "8080:8080"
+
+  # Frontend Next.js (PWA). Los NEXT_PUBLIC_* se hornean en el build (build args).
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8080
+        NEXT_PUBLIC_OIDC_AUTHORITY: http://localhost:8081/default
+        NEXT_PUBLIC_OIDC_CLIENT_ID: gentle
+        NEXT_PUBLIC_OIDC_REDIRECT_URI: http://localhost:3000/auth/callback
+    depends_on:
+      - backend
+      - mock-oidc
+    ports:
+      - "3000:3000"

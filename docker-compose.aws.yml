@@ -1,0 +1,47 @@
+# Build AWS-EMULADO de Gentle Task Companion. Corre el MISMO código que el self-host
+# (docker-compose.yml), pero contra MiniStack (Cognito + DynamoDB + S3 + Lambda + API GW).
+# La infra se aprovisiona con OpenTofu desde infra/aws/ (ver infra/aws/README.md).
+#
+#   docker compose -f docker-compose.aws.yml up -d ministack
+#   cd infra/aws && tofu apply        # (con el .envrc que aísla las credenciales)
+#
+# NUNCA usar en producción; MiniStack es un emulador local.
+name: gentle-aws
+
+services:
+  # Emulador AWS (compat LocalStack) en un solo contenedor, puerto 4566.
+  ministack:
+    image: ministackorg/ministack:latest
+    ports:
+      - "4566:4566"
+    environment:
+      # La Lambda se ejecuta en un contenedor RIE que MiniStack spawnea vía el docker.sock.
+      # Debe unirse a ESTA red para resolver `ministack` por nombre (endpoint interno).
+      LAMBDA_DOCKER_NETWORK: gentle-aws_default
+      S3_PERSIST: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  # Frontend Next.js (PWA), MISMO código que el self-host. Apunta al API Gateway y al
+  # Cognito de MiniStack. Los valores dinámicos (pool id / client id) se inyectan por env;
+  # generalos con `infra/aws/frontend-env.sh` (lee `tofu output`) antes de buildear:
+  #   eval "$(cd infra/aws && ./frontend-env.sh)"
+  #   docker compose -f docker-compose.aws.yml up -d --build frontend
+  # Bajo el profile "frontend": NO se levanta con `up ministack` ni `up` a secas, solo
+  # cuando lo pedís explícito (`up frontend` o `--profile frontend up`). Así ministack
+  # arranca sin necesitar los NEXT_PUBLIC_* (que solo se saben tras `tofu apply`).
+  # Antes de buildear el frontend: eval "$(cd infra/aws && ./frontend-env.sh)"
+  frontend:
+    profiles: ["frontend"]
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4566/_aws/execute-api/gentleapi}
+        NEXT_PUBLIC_OIDC_AUTHORITY: ${NEXT_PUBLIC_OIDC_AUTHORITY:-}
+        NEXT_PUBLIC_OIDC_METADATA_URL: ${NEXT_PUBLIC_OIDC_METADATA_URL:-}
+        NEXT_PUBLIC_OIDC_CLIENT_ID: ${NEXT_PUBLIC_OIDC_CLIENT_ID:-}
+        NEXT_PUBLIC_OIDC_REDIRECT_URI: http://localhost:3000/auth/callback
+    depends_on:
+      - ministack
+    ports:
+      - "3000:3000"
